@@ -1,0 +1,83 @@
+
+
+Ich möchte auf Basis des JavaParser eine Codetransformation bauen um Abhängigkeiten zu Implementationsklassen zwischen Modulen zu transformieren um die transitiven Abhängigkeiten der Modulabhängigkeiten auf ein Minimum zu reduzieren.
+Hierzu benötige ich zunächst ein Metamodell der Abhängigkeiten anderer Module zu einem Zielmodul das gerade transformiert werden soll. Erzeuge dazu ein maven Projekt auf Basis des JavaParsers und google guice und JUnit. Dieses Metamodell enthält:
+
+- Eine Liste aller von anderen Modulen als API verwendeten Klassen und Interfaces inclusive der daraus verwendeten Methoden, Felder und Konstruktoren
+- Die Metadaten der API Klassen haben eine boolen Eigenschaft isApiKonform falls diese true ist, so kann die Klasse inclusive der transitiven Hülle direkt als API genutzt werden
+    Ist isApiKonform false, so soll die Verwendung dieser Klasse durch die Nutzung eines API Interfaces ersetzt werden
+
+Die von anderen Modulen verwendeten Klassen und Interfaces bilden die Modul API. Das Ziel der Transformation ist die Trennung von API und Implementierung in einer Form die nur in dem Targetmodul selbst folgende Änderungen durchführt:
+
+1: Für alle verwendeten Implementationsklassen die als API genutzt werden soll statt dessen ein API-Interface genutzt werden das alle Api-Methoden enthält.
+
+- Falls es bereits ein geeignetes Interface gibt das die meisten API-Methoden enthält, soll dieses anstelle der Implementationsklasse genutzt werden. Ggf. muss dieses Interface um fehlende API-Methoden ergänzt werden
+    In diesem Fall muss die Verwendung der Implementationsklasse in anderen Produkten durch das Interface ersetzt werden
+    In allen Methoden des eigenen Produktes werden alle Parameter und Returnwerde von Api-Methoden welche die Implementationsklasse nutzen durch das die API Interfaceklasse ersetzt
+- Falls es noch kein geeignetes API Interface gibt, so wird dieses unter dem Namen der Original Implementationsklasse neu erstellt um Änderungen an anderen Produkten zu minimieren, die Implementationsklasse wird umbenannt mit der Endung Impl
+- Das API-Interface soll alle Interfaces der Implementationsklasse erweitern
+- Falls Konstruktoren von anderen Modulen genutzt werden, so wird zur Erzeugung der Implementationsklasse ein Factory Interface mit dem Namenspostfix Provider mit den passenden create-Methoden in der API erzeugt für die in der Implementationsschicht eine Implementation mit dem Namenspostfix ProviderImpl mit einem über die Guice de.tk.util.injection.ImplementationClass -Annotation markierten Konstruktor. Im Proxy wird diese Facroty über die jakarta.inject.Inject Annotation injected
+- Für als von anderen Modulen genutzte statische Methoden werden im API-Interface statische Wrapper-Methoden implementiert die ebenso wie für die Konstruktoren das Provider Interface genutzt welche die statischen Methoden als Interface-Methoden wrappt
+- Public static Fields der Implemenationsklasse werden in das API Interface verschoben
+- Für intern genutzte Methoden der Implementationsklasse wird ein Interface mit der Endung Intern erzeugt
+- Returnwerte und Parameter von API-Methoden nutzen generell das API-Interface, sollen darauf interne Methoden aufgerufen werden, so muss auf das Intern-Interface hochgecasted werden
+- Bei Vererbung muss die Subklasse ein API-Interface nutzen das vom API-Interface der Basisklasse erbt, das Intern Interface der Subklasse erbt vom Intern Interface der Basisklasse
+
+3: Alle internen Klassen die nicht als API verwendet werden werden in das impl Package verschoben dessen Pfad konfigurierbar ist
+
+4: Basis für die Codetransfomation sind Metadaten die aus einer vorangehenden AST Analyse stammen:
+
+- Liste von Intern-Casts auf Methoden mit
+            - Name der zu refactorisierenden Klasse
+            - Name der augerufenen internen Methoden
+            - Zeilennummer des zu refactorisierenden Methodcalls
+            - Name der Klasse zu der der Scope des Methodcalls gecastet werden soll
+
+- Liste von Construktorcalls der Implementationsklassen
+            - Name der zu refactorisierenden Klasse
+            - Name der erzeugten Implementationsklasse
+            - Name des Factoryinterfaces welches durch Guice injected wird
+            - Zeilennummer des zu refactorisierenden Constructorcalls
+
+Falls es zu der Implementationsklasse bereits ein API-Interface gibt wird diese nicht umbenannt sondern der verwendende Code angepasst und der Klassenname der Implementationsklasse durch den Namen des API-Interfaces ersetzt
+
+Für alle konstellationen soll umfangreicher Testcode etstellt werden bei dem die API-Klassen, Methoden, Felder, Konstruktoren und statische Methoden mit der de.tk.dependencyanalyse.transformation.Api Annotation markiert werden.
+Das zu transformierende Projekt wird über den Javaparser gescannt und dabei werden Metadaten für die API-Klassen mit den API relevanten Methoden, Feldern usw. erzeugt die im nächsten Schritt zur Transformation genutzt werden.
+Es sollen umfangreiche Tests erstellt werden im transformierten Modul um die Lauffähigkeit des internen Codes nach der Transformation sicherstellen bei dem sowohl API-Methoden als auch interne Methoden genutzt werden.
+Um die Nutzung von außen zu testen wird ein Testmodul erstellt welches Code enthält der ausschließlich API Methoden, Konstruktoren, statische Methoden und Felder nutzt.
+Es soll sichergestellt werden, das die Tests vor und nach der Transformation korrekt durchlaufen. Der Originalcode soll durch die Test-Transformation nicht zerstört werden sondern auf einer Kopie stattfinden der dann kompiliert wird und die Tests ausführt.
+
+Die Klassen des Refactoring-Tools landen in dem root-Package: de.tk.refactoring.tool
+Die Mainklasse zum Refactoring ist de.tk.refactoring.tool.ApiRefactoring mit folgender statischen Methoden:
+    public static void replaceImplUsage( CompilationUnit implClass )
+Für die Nutzung des Konstruktors wird ein Repository Interface geschaffen welches für jeden Konstruktor eine create-Methode enthält. Über Google Guice wird für dieses Interface eine Implementationsklasse im impl-Package geschaffen.
+Zur erzeugung einer Implementationsklasse aus einem anderen Projekt wird über Guice das Repository Interface injected und anstatt des Konstruktors der Implementationsklasse die create-Methode des Repository Interfaces verwendet.
+
+Zum Testen wird folgende Package Struktur genutzt:
+    de.tk.refactoring.test.projectA
+        impl:   Implementationsklassen
+        api:    API-Interfaces
+        intern: Intern-Interfaces
+     de.tk.refactoring.test.projectB
+        impl:   Implementationsklassen
+        api:    API-Interfaces
+        intern: Intern-Interfaces
+Implementationsklassen im gleichen Projekt, d.h. im gleichen Package dürfen die Implementationsklasse selbst direkt verwenden. 
+Wenn allerdings Parameter oder Returnwerte dieser Klasse selber API-Methoden sind so müssen die Typen in der Methodensignatur durch das API Interface ersetzt werden.
+Werden dann interne Methoden auf dieser Referenz auf das API-Interface aufgerufen, dann muss diese Referenz auf das Intern-Interface gecastet werden.
+
+In den Nutzenden Klassen der anderen Projekte werden Typreferenzen in Feldern, Methodenparametern, lokalen Variablen und Returnwerten durch das API-Interface ersetzt. 
+Importe auf die Implementationsklasse werden durch Importe auf das API-Interface ersetzt. 
+
+Erstelle umfangreiche Tests mit folgenden Szenarien:
+    Interne Klasse ruft Methode in gleichem Produkt auf deren Returnwert durch das API-Interface ersetzt wurde und ruft darauf eine Interne Methode auf die dann einen cast benötigt.
+    Interne Klasse hat ein Field zu einer Implementationsklasse in gleichem Produkt das durch den Konstruktor initialisert wird und ruft darauf eine Interne Methode auf. Hier wird kein cast benötigt.
+    Teste Interne Verwendungen  innerhalb von Methoden
+    Teste externe Verwendungen mit Ersetzung von Typen.
+    Teste Implementationsklassen mit bestehenden unvollständigen API-Interfaces und ohne Interfaces.
+    Teste externe Nutzung des Konstruktors und die Ersetzung durch Injection des Repository interfaces.
+
+Step 2:
+======0
+Der transformierte Testcode soll in einem zusätzlichen Sourcefolder transformed/java/... generiert werden der auch in Maven als zusätzlicher Sourcefolder konfiguriert wird um sicherzustellen, dass der transformierte Code auch Compiliert. 
+Die Compilierbarkeit des Codes soll über einen Test sichergestellt werden.
